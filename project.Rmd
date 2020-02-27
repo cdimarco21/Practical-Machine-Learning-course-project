@@ -1,0 +1,227 @@
+---
+title: "Practical Machine Learning project"
+author: "C. DiMarco"
+date: "2/21/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. We use most of the other variables to predict with. 
+
+## Preliminaries and first round of cross-validation
+Read in the training data, then partition into 75% training and 25% testing sets (first round of cross-validation, as per usual in the lectures).
+```{r, echo = TRUE}
+setwd("~/coursera/practical machine learning/Practical Machine Learning")
+
+if(!require(caret)){
+    library(caret)
+    library(knitr)
+    library(randomForest)
+}
+
+trainingData <- read.csv("pml-training.csv")
+#Check what data look like without NAs
+trainingDataLite <- read.csv("pml-training.csv")
+set.seed(333)
+inTrain <- createDataPartition(trainingData$classe, p = 0.75, list = FALSE)
+training <- trainingData[inTrain, ]
+testing <- trainingData[-inTrain, ]
+```
+
+## Exploratory
+Many varaibles are missing most values.
+```{r, echo=TRUE}
+#Function to compute the NA percentage of a variable x
+percentMissing <- function(x) {
+  sum(is.na(x))/length(x)
+}
+
+#Determine which variables are more than 50% missing.
+manyMissing <- apply(training, MARGIN = 2, FUN = percentMissing)
+qplot(x = colnames(training), y = manyMissing)
+
+  #There are lots.
+  mostlyMissingVariables <- colnames(training)[manyMissing > 0.5]
+  cat("There are", length(mostlyMissingVariables), "variables missing", 
+      "more than 50% of their values.")
+```
+Does new_window have an effect on classe?
+```{r}
+
+```
+
+
+
+
+## Pre-processing
+
+### 1. Remove variables that are almost entirely missing.
+``` {r}
+training <- training[, manyMissing <= 0.05]
+testing <- testing[, manyMissing <= 0.05]
+```
+
+### 2. Remove non-predictors
+The variable X simply numbers the rows, so may be disregarded.  Similarly the timestamps appear to be irrelevant.
+
+Each of the 6 participants performed 10 repetitions in 5 fashions (classes), so the classe does not depend on the user_name in a meaningful way.  Therefore user_name should be eliminated as a predictor.
+
+```{r}
+training <- training[, -c(1:5)]
+testing <- testing[, -c(1:5)]
+#qplot(new_window, classe, data = training)
+```
+
+### 3. Check which variales have near-zero variance.
+Remove all numeric variables from the training and testing sets that exhibit near-zero variance in the training set.
+```{r}
+nsv <- nearZeroVar(training, saveMetrics = TRUE)
+training <- training[ , nsv$nzv == FALSE]
+testing <- testing[ , nsv$nzv == FALSE]
+```
+### 4. Do KNN imputation to all variables except the response variable classe.
+```{r}
+classeIndex <- dim(training)[2]  #column index for classe variable
+preObj <- preProcess(training[, -classeIndex], method = "knnImpute")
+trainImp <- predict(preObj, training[, -classeIndex])
+#Now put classe back into data frame to fit the model with multinomial logistic regression later
+trainImpFinal <- cbind(trainImp, training$classe)
+colnames(trainImpFinal)[classeIndex] <- "classe"
+```
+
+## Fit several standard classification models 
+using 10-fold cross validation with accuracy as the metric for selection.  Note that we have not chosen to use any linear models because we are doing classification, not prediction of a continuous response.
+``` {r}
+control <- trainControl(method = "cv", number = 10)
+metric <- "Accuracy"
+```
+
+### classification tree
+```{r}
+set.seed(7)
+modFitTree <- train(classe ~.,
+                data = trainImpFinal,
+                method = "rpart",
+                trControl = control,
+                metric = metric)
+```
+
+### linear discriminant analysis
+```{r}
+set.seed(7)
+modFitLda <- train(classe ~.,
+                data = trainImpFinal,
+                method = "lda",
+                trControl = control,
+                metric = metric)
+```
+
+### k-nearest neighbors
+```{r}
+set.seed(7)
+modFitKnn <- train(classe ~.,
+                data = trainImpFinal,
+                method = "knn",
+                trControl = control,
+                metric = metric)
+```
+
+<!-- #support vector machine -->
+<!-- ```{r} -->
+<!-- set.seed(7) -->
+<!-- modFitSvm <- train(classe ~., -->
+<!--                 data = trainImpFinal, -->
+<!--                 method = "svmRadial", -->
+<!--                 trControl = control, -->
+<!--                 metric = metric) -->
+<!-- ``` -->
+
+<!-- #random forest -->
+<!-- We accept the default parameters for trainControl here to speed things up. -->
+<!-- ```{r} -->
+<!-- set.seed(7) -->
+<!-- modFitForest <- train(classe ~., -->
+<!--                 data = trainImpFinal, -->
+<!--                 method = "rf", -->
+<!--                # trControl = control, -->
+<!--                 metric = metric) -->
+<!-- ``` -->
+
+## Model comparison and out-of-sample error estimate
+```{r}
+results <- resamples(list(lda = modFitLda, cart = modFitTree, knn = modFitKnn))
+summary(results)
+
+#compare accuracy
+dotplot(results)
+
+#summarize modFitKnn
+print(modFitKnn)
+```
+
+It appears that the k-nearest neighbors model modFitKnn has the highest accuracy in the training set, so we test this model on testing set.
+
+```{r}
+#Compute the new test set according to the above preprocessing routine using the preprocess object preObj.
+testingImp <- predict(preObj, testing[, -classeIndex])
+
+#Predict classe values in the testing set
+testingPredictions <- predict(modFitKnn, testingImp)
+
+#Compare to true values with confusion matrix
+testingTruth <- testing$classe
+confusionMatrix(testingTruth, testingPredictions)
+```
+
+
+# Estimate of the out of sample accuracy/error
+The model is quite accurate on the testing data that we set aside for the preliminary round of cross-validation.  At this stage, we estimate the out-of-sample accuracy to be 0.9725.  This is equivalent (complementary) to estimating the out-of-sample error.
+
+
+# Load the separate data file for testing (call it validation) and make predictions using the k-nearest neighbors model modFitKnn.
+```{r}
+validation <- read.csv("pml-testing.csv")
+```
+
+
+
+## Preprocess the validation set in the same way as the training set.
+
+### 1. Remove the same variables.
+``` {r}
+validation <- validation[, manyMissing <= 0.05]
+```
+
+### 2. Remove non-predictors
+```{r}
+validation <- validation[, -c(1:5)]
+```
+
+### 3. Remove the same variables that were removed from the training set due to near-zero variance.
+```{r}
+validation <- validation[ , nsv$nzv == FALSE]
+```
+
+### 4. Preprocess the validation set using preObj (the same preprocess object developed on the training set).
+```{r}
+#Compute the new test set according to the above preprocessing routine using the preprocess object preObj.
+validationImp <- predict(preObj, validation[, -classeIndex])
+
+#Predict classe values in the testing set
+validationPredictions <- predict(modFitKnn, validationImp)
+
+# #Compare to true values with confusion matrix
+# validationTruth <- validation$classe
+# confusionMatrix(validationTruth, validationPredictions)
+```
+
+## Predictions for the validation/test data:
+```{r}
+validationPredictions
+```
